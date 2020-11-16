@@ -2,6 +2,7 @@ package com.dji.cc01;
 
 import android.Manifest;
 import android.content.pm.PackageManager;
+import android.hardware.usb.UsbManager;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
@@ -9,9 +10,12 @@ import android.content.Intent;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.View;
+import android.widget.Button;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -22,10 +26,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import dji.common.error.DJIError;
 import dji.common.error.DJISDKError;
+import dji.common.flightcontroller.virtualstick.FlightCoordinateSystem;
+import dji.common.flightcontroller.virtualstick.RollPitchControlMode;
+import dji.common.flightcontroller.virtualstick.VerticalControlMode;
+import dji.common.flightcontroller.virtualstick.YawControlMode;
+import dji.common.util.CommonCallbacks;
 import dji.sdk.base.BaseComponent;
 import dji.sdk.base.BaseProduct;
+import dji.sdk.flightcontroller.FlightController;
+import dji.sdk.products.Aircraft;
 import dji.sdk.sdkmanager.DJISDKInitEvent;
 import dji.sdk.sdkmanager.DJISDKManager;
+
+import static java.security.AccessController.getContext;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -33,6 +46,11 @@ public class MainActivity extends AppCompatActivity {
     public static final String FLAG_CONNECTION_CHANGE = "dji_sdk_connection_change";
     private static BaseProduct mProduct;
     private Handler mHandler;
+    private FlightController mFlightController;
+
+    public Button mBtnTakeOff;
+    public Button mBtnLand;
+
 
     private static final String[] REQUIRED_PERMISSION_LIST = new String[]{
             Manifest.permission.VIBRATE,
@@ -52,10 +70,22 @@ public class MainActivity extends AppCompatActivity {
     private List<String> missingPermission = new ArrayList<>();
     private AtomicBoolean isRegistrationInProgress = new AtomicBoolean(false);
     private static final int REQUEST_PERMISSION_CODE = 12345;
+    private BaseComponent.ComponentListener mDJIComponentListener = new BaseComponent.ComponentListener() {
+
+        @Override
+        public void onConnectivityChange(boolean isConnected) {
+            Log.d(TAG, "onComponentConnectivityChanged: " + isConnected);
+            notifyStatusChange();
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        mBtnTakeOff = (Button) findViewById(R.id.btnTakeOff);
+        mBtnLand = (Button) findViewById(R.id.btnLand);
+
 
         // When the compile and target version is higher than 22, please request the following permission at runtime to ensure the SDK works well.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -116,6 +146,22 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    @Override
+    protected void onDestroy() {
+        MApplication.getEventBus().unregister(this);
+        super.onDestroy();
+    }
+
+    @Override
+    protected void onNewIntent(@NonNull Intent intent) {
+        String action = intent.getAction();
+        if (UsbManager.ACTION_USB_ACCESSORY_ATTACHED.equals(action)) {
+            Intent attachedIntent = new Intent();
+            attachedIntent.setAction(DJISDKManager.USB_ACCESSORY_ATTACHED);
+            sendBroadcast(attachedIntent);
+        }
+    }
+
     private void startSDKRegistration() {
         if (isRegistrationInProgress.compareAndSet(false, true)) {
             AsyncTask.execute(new Runnable() {
@@ -142,12 +188,14 @@ public class MainActivity extends AppCompatActivity {
                             notifyStatusChange();
 
                         }
+
                         @Override
                         public void onProductConnect(BaseProduct baseProduct) {
                             Log.d(TAG, String.format("onProductConnect newProduct:%s", baseProduct));
                             showToast("Product Connected");
+                            mProduct = baseProduct;
                             notifyStatusChange();
-
+                            initFlightController();
                         }
 
                         @Override
@@ -193,9 +241,13 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+
     private void notifyStatusChange() {
         mHandler.removeCallbacks(updateRunnable);
         mHandler.postDelayed(updateRunnable, 500);
+        MApplication.getEventBus().post(new ConnectivityChangeEvent());
+        showToast(mProduct.toString());
+
     }
 
     private Runnable updateRunnable = new Runnable() {
@@ -219,4 +271,114 @@ public class MainActivity extends AppCompatActivity {
 
     }
 
+    @Override
+    public void onPointerCaptureChanged(boolean hasCapture) {
+
+    }
+
+    public static class ConnectivityChangeEvent {
+    }
+
+    private void initFlightController() {
+
+        Aircraft aircraft = MApplication.getAircraftInstance();
+        if (aircraft == null || !aircraft.isConnected()) {
+            showToast("Disconnected");
+            mFlightController = null;
+            return;
+        } else {
+            mFlightController = aircraft.getFlightController();
+            mFlightController.setRollPitchControlMode(RollPitchControlMode.VELOCITY);
+            mFlightController.setYawControlMode(YawControlMode.ANGULAR_VELOCITY);
+            mFlightController.setVerticalControlMode(VerticalControlMode.VELOCITY);
+            mFlightController.setRollPitchCoordinateSystem(FlightCoordinateSystem.BODY);
+
+        }
+    }
+
+//    @Override
+//    public void onClick(View v) {
+//
+//        switch (v.getId()) {
+//
+//            case R.id.btnTakeOff:
+//                if (mFlightController != null){
+//                    mFlightController.startTakeoff(
+//                            new CommonCallbacks.CompletionCallback() {
+//                                @Override
+//                                public void onResult(DJIError djiError) {
+//                                    if (djiError != null) {
+//                                        showToast(djiError.getDescription());
+//                                    } else {
+//                                        showToast("Take off Success");
+//                                    }
+//                                }
+//                            }
+//                    );
+//                }
+//
+//                break;
+//
+//            case R.id.btnLand:
+//                if (mFlightController != null){
+//
+//                    mFlightController.startLanding(
+//                            new CommonCallbacks.CompletionCallback() {
+//                                @Override
+//                                public void onResult(DJIError djiError) {
+//                                    if (djiError != null) {
+//                                        showToast(djiError.getDescription());
+//                                    } else {
+//                                        showToast("Start Landing");
+//                                    }
+//                                }
+//                            }
+//                    );
+//
+//                }
+//
+//                break;
+//
+//            default:
+//                break;
+//        }
+//    }
+
+    public void performTakeOff(View view){
+
+        showToast("Take off Success");
+        if (mFlightController != null){
+            mFlightController.startTakeoff(
+                    new CommonCallbacks.CompletionCallback() {
+                        @Override
+                        public void onResult(DJIError djiError) {
+                            if (djiError != null) {
+                                showToast(djiError.getDescription());
+                            } else {
+                                showToast("Take off Success");
+                            }
+                        }
+                    }
+            );
+        }
+    }
+
+    public void performLanding(View view){
+        if (mFlightController != null){
+
+            mFlightController.startLanding(
+                    new CommonCallbacks.CompletionCallback() {
+                        @Override
+                        public void onResult(DJIError djiError) {
+                            if (djiError != null) {
+                                showToast(djiError.getDescription());
+                            } else {
+                                showToast("Start Landing");
+                            }
+                        }
+                    }
+            );
+
+        }
+    }
 }
